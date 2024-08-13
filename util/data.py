@@ -10,11 +10,20 @@ from typing import Tuple, Dict
 from torch import Tensor
 import random
 from sklearn.model_selection import train_test_split
+import socket
 
+hostname = socket.gethostname()
 def get_data(args: argparse.Namespace): 
     """
     Load the proper dataset based on the parsed arguments
     """
+    if hostname.endswith('local'):  # Example check for local machine names
+        print("Running on Macbook locally")
+        data_path = '/Users/youssefshaarawy/Documents/Datasets/OCT2017/'
+    else:
+        print(f"Running on remote server: {hostname}")
+        data_path = "/users/adfx751/Datasets/OCT2017/"
+
     torch.manual_seed(args.seed)
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -28,6 +37,10 @@ def get_data(args: argparse.Namespace):
         return get_cars(True, './data/cars/dataset/train', './data/cars/dataset/train', './data/cars/dataset/test', args.image_size, args.seed, args.validation_size)
     if args.dataset == 'grayscale_example':
         return get_grayscale(True, './data/train', './data/train', './data/test', args.image_size, args.seed, args.validation_size)
+    if args.dataset == 'OCT2017':
+        train_dir = data_path + 'train_balanced'
+        val_dir = data_path + 'val/'
+        return get_oct(True, train_dir, train_dir, val_dir, args.image_size, args.seed, args.validation_size)
     raise Exception(f'Could not load data set, data set "{args.dataset}" not found!')
 
 def get_dataloaders(args: argparse.Namespace, device):
@@ -330,6 +343,35 @@ def get_grayscale(augment:bool, train_dir:str, project_dir: str, test_dir:str, i
                             TrivialAugmentWideNoShape(),
                             transforms.RandomCrop(size=(img_size, img_size)), #includes crop
                             transforms.Grayscale(3),#convert to grayscale with three channels
+                            transforms.ToTensor(),
+                            normalize
+                            ])
+    else:
+        transform1 = transform_no_augment    
+        transform2 = transform_no_augment           
+
+    return create_datasets(transform1, transform2, transform_no_augment, 3, train_dir, project_dir, test_dir, seed, validation_size)
+def get_oct(augment:bool, train_dir:str, project_dir: str, test_dir:str, img_size: int, seed:int, validation_size:float): 
+    # Validation size was set to 0.2, such that 80% of the data is used for training
+    mean = (0.485, 0.456, 0.406)
+    std = (0.229, 0.224, 0.225)
+    normalize = transforms.Normalize(mean=mean,std=std)
+    transform_no_augment = transforms.Compose([
+                            transforms.Resize(size=(img_size, img_size)),
+                            transforms.ToTensor(),
+                            normalize
+                        ])
+
+    if augment:
+        transform1 = transforms.Compose([
+            transforms.Resize(size=(img_size+48, img_size+48)), 
+            TrivialAugmentWideNoColor(),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomResizedCrop(img_size+8, scale=(0.95, 1.))
+        ])
+        transform2 = transforms.Compose([
+                            TrivialAugmentWideNoShape(),
+                            transforms.RandomCrop(size=(img_size, img_size)), #includes crop
                             transforms.ToTensor(),
                             normalize
                             ])

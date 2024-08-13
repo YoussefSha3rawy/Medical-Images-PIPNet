@@ -16,6 +16,7 @@ import numpy as np
 from shutil import copy
 import matplotlib.pyplot as plt
 from copy import deepcopy
+from logger import WandbLogger
 
 def run_pipnet(args=None):
 
@@ -32,6 +33,8 @@ def run_pipnet(args=None):
     print("Log dir: ", args.log_dir, flush=True)
     # Log the run arguments
     save_args(args, log.metadata_dir)
+
+    wandb_logger = WandbLogger(args, logger_name='PIPNet', project='FinalProject')
     
     gpu_list = args.gpu_ids.split(',')
     device_ids = []
@@ -163,7 +166,7 @@ def run_pipnet(args=None):
         plt.plot(lrs_pretrain_net)
         plt.savefig(os.path.join(args.log_dir,'lr_pretrain_net.png'))
         log.log_values('log_epoch_overview', epoch, "n.a.", "n.a.", "n.a.", "n.a.", "n.a.", "n.a.", "n.a.", train_info['loss'])
-    
+        wandb_logger.log(train_info)
     if args.state_dict_dir_net == '':
         net.eval()
         torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'net_pretrained'))
@@ -245,7 +248,8 @@ def run_pipnet(args=None):
         # Evaluate model
         eval_info = eval_pipnet(net, testloader, epoch, device, log)
         log.log_values('log_epoch_overview', epoch, eval_info['top1_accuracy'], eval_info['top5_accuracy'], eval_info['almost_sim_nonzeros'], eval_info['local_size_all_classes'], eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], train_info['train_accuracy'], train_info['loss'])
-            
+        wandb_logger.log(eval_info)
+
         with torch.no_grad():
             net.eval()
             torch.save({'model_state_dict': net.state_dict(), 'optimizer_net_state_dict': optimizer_net.state_dict(), 'optimizer_classifier_state_dict': optimizer_classifier.state_dict()}, os.path.join(os.path.join(args.log_dir, 'checkpoints'), 'net_trained'))
@@ -280,6 +284,7 @@ def run_pipnet(args=None):
         print("Weights of prototypes", set_to_zero, "are set to zero because it is never detected with similarity>0.1 in the training set", flush=True)
         eval_info = eval_pipnet(net, testloader, "notused"+str(args.epochs), device, log)
         log.log_values('log_epoch_overview', "notused"+str(args.epochs), eval_info['top1_accuracy'], eval_info['top5_accuracy'], eval_info['almost_sim_nonzeros'], eval_info['local_size_all_classes'], eval_info['almost_nonzeros'], eval_info['num non-zero prototypes'], "n.a.", "n.a.")
+        wandb_logger.log(eval_info)
 
     print("classifier weights: ", net.module._classification.weight, flush=True)
     print("Classifier weights nonzero: ", net.module._classification.weight[net.module._classification.weight.nonzero(as_tuple=True)], (net.module._classification.weight[net.module._classification.weight.nonzero(as_tuple=True)]).shape, flush=True)
