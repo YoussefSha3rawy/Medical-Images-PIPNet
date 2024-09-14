@@ -99,7 +99,7 @@ def vis_pred(net, vis_test_dir, classes, device, args: argparse.Namespace):
                             heatmap_img =  0.2 * np.float32(heatmap) + 0.6 * np.float32(img_tensor.squeeze().numpy().transpose(1,2,0))
                             plt.imsave(fname=os.path.join(save_path, 'heatmap_p%s.png'%str(prototype_idx.item())),arr=heatmap_img,vmin=0.0,vmax=1.0)
            
-def vis_pred_experiments(net, imgs_dir, classes, device, args: argparse.Namespace):
+def vis_pred_experiments(net, imgs_dir, classes, device, args: argparse.Namespace, wandb_logger = None):
     # Make sure the model is in evaluation mode
     net.eval()
 
@@ -124,23 +124,35 @@ def vis_pred_experiments(net, imgs_dir, classes, device, args: argparse.Namespac
                                                 shuffle=False, pin_memory=not args.disable_cuda and torch.cuda.is_available(),
                                                 num_workers=num_workers)
     imgs = vis_test_set.imgs
-    for k, (xs, ys) in enumerate(vis_test_loader): #shuffle is false so should lead to same order as in imgs
-        
+
+    # Initialize arrays for storing predictions and labels
+    all_predictions = []
+    all_labels = []
+
+    # Iterate over the test set
+    for k, (xs, ys) in enumerate(vis_test_loader):  # shuffle is false so should lead to the same order as in imgs
+
         xs, ys = xs.to(device), ys.to(device)
         img = imgs[k][0]
         img_name = os.path.splitext(os.path.basename(img))[0]
-        dir = os.path.join(save_dir,img_name)
+        dir = os.path.join(save_dir, img_name)
+        
         if not os.path.exists(dir):
             os.makedirs(dir)
             shutil.copy(img, dir)
         
         with torch.no_grad():
-            softmaxes, pooled, out = net(xs, inference=True) #softmaxes has shape (bs, num_prototypes, W, H), pooled has shape (bs, num_prototypes), out has shape (bs, num_classes)
+            softmaxes, pooled, out = net(xs, inference=True)  # Get model output
             sorted_out, sorted_out_indices = torch.sort(out.squeeze(0), descending=True)
+            
+            # Get predicted class (index of the highest output)
+            pred_class_idx = sorted_out_indices[0].item()
+            all_predictions.append(pred_class_idx)
+            all_labels.append(ys.item())  # Store the true label
             
             for pred_class_idx in sorted_out_indices:
                 pred_class = classes[pred_class_idx]
-                save_path = os.path.join(dir, str(f"{out[0,pred_class_idx].item():.3f}")+"_"+pred_class)
+                save_path = os.path.join(dir, str(f"{out[0, pred_class_idx].item():.3f}") + "_" + pred_class)
                 if not os.path.exists(save_path):
                     os.makedirs(save_path)
                 
@@ -148,7 +160,7 @@ def vis_pred_experiments(net, imgs_dir, classes, device, args: argparse.Namespac
                 
                 simweights = []
                 for prototype_idx in sorted_pooled_indices:
-                    simweight = pooled[0,prototype_idx].item() * net.module._classification.weight[pred_class_idx, prototype_idx].item()
+                    simweight = pooled[0, prototype_idx].item() * net.module._classification.weight[pred_class_idx, prototype_idx].item()
                     
                     simweights.append(simweight)
                     if abs(simweight) > 0.01:
@@ -158,12 +170,29 @@ def vis_pred_experiments(net, imgs_dir, classes, device, args: argparse.Namespac
                         max_idx_w = max_idx_w.item()
                         
                         image = transforms.Resize(size=(args.image_size, args.image_size))(Image.open(img).convert("RGB"))
-                        img_tensor = transforms.ToTensor()(image).unsqueeze_(0) #shape (1, 3, h, w)
+                        img_tensor = transforms.ToTensor()(image).unsqueeze_(0)  # shape (1, 3, h, w)
                         h_coor_min, h_coor_max, w_coor_min, w_coor_max = get_img_coordinates(args.image_size, softmaxes.shape, patchsize, skip, max_idx_h, max_idx_w)
                         img_tensor_patch = img_tensor[0, :, h_coor_min:h_coor_max, w_coor_min:w_coor_max]
                         img_patch = transforms.ToPILImage()(img_tensor_patch)
-                        img_patch.save(os.path.join(save_path, 'mul%s_p%s_sim%s_w%s_patch.png'%(str(f"{simweight:.3f}"),str(prototype_idx.item()),str(f"{pooled[0,prototype_idx].item():.3f}"),str(f"{net.module._classification.weight[pred_class_idx, prototype_idx].item():.3f}"))))
+                        img_patch.save(os.path.join(save_path, 'mul%s_p%s_sim%s_w%s_patch.png' % (
+                            str(f"{simweight:.3f}"), str(prototype_idx.item()), str(f"{pooled[0, prototype_idx].item():.3f}"),
+                            str(f"{net.module._classification.weight[pred_class_idx, prototype_idx].item():.3f}"))))
                         draw = D.Draw(image)
-                        draw.rectangle([(max_idx_w*skip,max_idx_h*skip), (min(args.image_size, max_idx_w*skip+patchsize), min(args.image_size, max_idx_h*skip+patchsize))], outline='yellow', width=2)
-                        image.save(os.path.join(save_path, 'mul%s_p%s_sim%s_w%s_rect.png'%(str(f"{simweight:.3f}"),str(prototype_idx.item()),str(f"{pooled[0,prototype_idx].item():.3f}"),str(f"{net.module._classification.weight[pred_class_idx, prototype_idx].item():.3f}"))))
+                        draw.rectangle([(max_idx_w * skip, max_idx_h * skip), 
+                                        (min(args.image_size, max_idx_w * skip + patchsize), 
+                                        min(args.image_size, max_idx_h * skip + patchsize))], outline='yellow', width=2)
+                        image.save(os.path.join(save_path, 'mul%s_p%s_sim%s_w%s_rect.png' % (
+                            str(f"{simweight:.3f}"), str(prototype_idx.item()), str(f"{pooled[0, prototype_idx].item():.3f}"),
+                            str(f"{net.module._classification.weight[pred_class_idx, prototype_idx].item():.3f}"))))
 
+    # Calculate accuracy
+    all_predictions = np.array(all_predictions)
+    all_labels = np.array(all_labels)
+    accuracy = np.mean(all_predictions == all_labels)
+
+    print(f"Accuracy: {accuracy * 100:.2f}%")
+
+    if wandb_logger:
+        wandb_log = {"test_accuracy": accuracy}     
+        wandb_logger.log(wandb_log)
+        wandb_logger.log_confusion_matrix(all_labels, all_predictions)
