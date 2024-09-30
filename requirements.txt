@@ -4,5 +4,6 @@ opencv-python
 scikit-learn
 pandas
 pillow
+timm
 tqdm
 wandb

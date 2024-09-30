@@ -260,6 +260,10 @@ def get_optimizer_nn(net, args: argparse.Namespace) -> torch.optim.Optimizer:
             #     param.requires_grad = False
             else:
                 params_backbone.append(param)
+    elif 'vit' in args.net:
+        print("chosen network is vit", flush=True)
+        for name, param in net.module._net.named_parameters():
+            params_to_freeze.append(param)
     else:
         print("Network is not ResNet or ConvNext.", flush=True)
     classification_weight = []

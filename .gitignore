@@ -346,3 +346,4 @@ scripts
 wandb
 saved_models
 runs
+.vscode
