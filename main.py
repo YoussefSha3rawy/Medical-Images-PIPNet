@@ -17,10 +17,7 @@ from wandb_logger import WandbLogger
 
 def main():
 
-    torch.manual_seed(43)
-    torch.cuda.manual_seed_all(43)
-    random.seed(43)
-    np.random.seed(43)
+    initialise_seed(43)
 
     args = get_args()
     assert args.batch_size > 1
@@ -36,12 +33,7 @@ def main():
                                project='FinalProject')
 
     global device
-    if torch.cuda.is_available():
-        device = torch.device('cuda')
-    elif torch.backends.mps.is_available():
-        device = torch.device('mps')
-    else:
-        device = torch.device('cpu')
+    device = set_device()
 
     # Log which device was actually used
     print("Device used: ", device)
@@ -65,37 +57,9 @@ def main():
     # Initialize or load model
     with torch.no_grad():
         if args.state_dict_dir_net != '':
-            epoch = 0
-            checkpoint = torch.load(args.state_dict_dir_net,
-                                    map_location=device)
-            net.load_state_dict(checkpoint['model_state_dict'], strict=True)
-            print("Pretrained network loaded")
-            net._multiplier.requires_grad = False
-            try:
-                optimizer_net.load_state_dict(
-                    checkpoint['optimizer_net_state_dict'])
-            except:
-                pass
-            if torch.mean(net._classification.weight).item(
-            ) > 1.0 and torch.mean(net._classification.weight).item(
-            ) < 3.0 and torch.count_nonzero(
-                    torch.relu(net._classification.weight - 1e-5)
-            ).float().item() > 0.8 * (
-                    net.num_prototypes * len(classes)
-            ):  #assume that the linear classification layer is not yet trained (e.g. when loading a pretrained backbone only)
-                torch.nn.init.normal_(net._classification.weight,
-                                      mean=1.0,
-                                      std=0.1)
-                torch.nn.init.constant_(net._multiplier, val=2.)
-
+            load_checkpoint(args, classes, net, optimizer_net)
         else:
-            net._add_on.apply(init_weights_xavier)
-            torch.nn.init.normal_(net._classification.weight,
-                                  mean=1.0,
-                                  std=0.1)
-            torch.nn.init.constant_(net._classification.bias, val=0.)
-            torch.nn.init.constant_(net._multiplier, val=2.)
-            net._multiplier.requires_grad = False
+            initialise_net(net)
 
     # Define classification loss function and scheduler
     criterion = nn.NLLLoss(reduction='mean').to(device)
@@ -347,6 +311,51 @@ def main():
                              device, args, wandb_logger)
 
     print("Done!")
+
+
+def initialise_net(net):
+    net._add_on.apply(init_weights_xavier)
+    torch.nn.init.normal_(net._classification.weight, mean=1.0, std=0.1)
+    torch.nn.init.constant_(net._classification.bias, val=0.)
+    torch.nn.init.constant_(net._multiplier, val=2.)
+    net._multiplier.requires_grad = False
+
+
+def load_checkpoint(args, classes, net, optimizer_net):
+    epoch = 0
+    checkpoint = torch.load(args.state_dict_dir_net, map_location=device)
+    net.load_state_dict(checkpoint['model_state_dict'], strict=True)
+    print("Pretrained network loaded")
+    net._multiplier.requires_grad = False
+    try:
+        optimizer_net.load_state_dict(checkpoint['optimizer_net_state_dict'])
+    except:
+        pass
+    if torch.mean(net._classification.weight).item() > 1.0 and torch.mean(
+            net._classification.weight
+    ).item() < 3.0 and torch.count_nonzero(
+            torch.relu(net._classification.weight - 1e-5)
+    ).float().item() > 0.8 * (
+            net.num_prototypes * len(classes)
+    ):  #assume that the linear classification layer is not yet trained (e.g. when loading a pretrained backbone only)
+        torch.nn.init.normal_(net._classification.weight, mean=1.0, std=0.1)
+        torch.nn.init.constant_(net._multiplier, val=2.)
+
+
+def set_device():
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    elif torch.backends.mps.is_available():
+        return torch.device('mps')
+    else:
+        return torch.device('cpu')
+
+
+def initialise_seed(seed: int):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    random.seed(seed)
+    np.random.seed(seed)
 
 
 if __name__ == '__main__':
