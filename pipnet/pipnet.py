@@ -3,20 +3,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from features.resnet_features import resnet18_features, resnet34_features, resnet50_features, resnet50_features_inat, resnet101_features, resnet152_features
-from features.convnext_features import convnext_tiny_26_features, convnext_tiny_13_features, vit_features
+from features.convnext_features import convnext_tiny_26_features, convnext_tiny_13_features
 import torch
 from torch import Tensor
 
 
 class PIPNet(nn.Module):
 
-    def __init__(self, num_classes: int, num_prototypes: int,
-                 feature_net: nn.Module, args: argparse.Namespace,
-                 add_on_layers: nn.Module, pool_layer: nn.Module,
-                 classification_layer: nn.Module):
+    def __init__(self, num_classes: int, args: argparse.Namespace):
         super().__init__()
         assert num_classes > 0
-        self._num_features = args.num_features
+        feature_net, add_on_layers, pool_layer, classification_layer, num_prototypes = get_network(
+            num_classes, args.net)
+        self._num_features = 0
         self._num_classes = num_classes
         self._num_prototypes = num_prototypes
         self._net = feature_net
@@ -24,6 +23,10 @@ class PIPNet(nn.Module):
         self._pool = pool_layer
         self._classification = classification_layer
         self._multiplier = classification_layer.normalization_multiplier
+
+    @property
+    def num_prototypes(self):
+        return self._num_prototypes
 
     def forward(self, xs, inference=False):
         features = self._net(xs)
@@ -50,7 +53,6 @@ base_architecture_to_features = {
     'resnet152': resnet152_features,
     'convnext_tiny_26': convnext_tiny_26_features,
     'convnext_tiny_13': convnext_tiny_13_features,
-    'vit': vit_features
 }
 
 
@@ -83,58 +85,29 @@ class NonNegLinear(nn.Module):
         return F.linear(input, torch.relu(self.weight), self.bias)
 
 
-def get_network(num_classes: int, args: argparse.Namespace):
-    features = base_architecture_to_features[args.net](
-        pretrained=not args.disable_pretrained)
+def get_network(num_classes: int, net: str):
+    features = base_architecture_to_features[net](pretrained=True)
     features_name = str(features).upper()
-    if 'next' in args.net:
-        features_name = str(args.net).upper()
-    if features_name.startswith('RES') or features_name.startswith(
-            'CONVNEXT') or features_name.startswith('VIT'):
+    if 'next' in net:
+        features_name = str(net).upper()
+    if features_name.startswith('RES') or features_name.startswith('CONVNEXT'):
         first_add_on_layer_in_channels = \
             [i for i in features.modules() if isinstance(i, nn.Conv2d)][-1].out_channels
     else:
         raise Exception('other base architecture NOT implemented')
 
-    if args.num_features == 0:
-        num_prototypes = first_add_on_layer_in_channels
-        print("Number of prototypes: ", num_prototypes, flush=True)
-        add_on_layers = nn.Sequential(
-            nn.Softmax(
-                dim=1
-            ),  #softmax over every prototype for each patch, such that for every location in image, sum over prototypes is 1                
-        )
-    else:
-        num_prototypes = args.num_features
-        print("Number of prototypes set from",
-              first_add_on_layer_in_channels,
-              "to",
-              num_prototypes,
-              ". Extra 1x1 conv layer added. Not recommended.",
-              flush=True)
-        add_on_layers = nn.Sequential(
-            nn.Conv2d(in_channels=first_add_on_layer_in_channels,
-                      out_channels=num_prototypes,
-                      kernel_size=1,
-                      stride=1,
-                      padding=0,
-                      bias=True),
-            nn.Softmax(
-                dim=1
-            ),  #softmax over every prototype for each patch, such that for every location in image, sum over prototypes is 1                
-        )
+    num_prototypes = first_add_on_layer_in_channels
+    print("Number of prototypes: ", num_prototypes)
+    add_on_layers = nn.Sequential(
+        nn.Softmax(
+            dim=1
+        ),  #softmax over every prototype for each patch, such that for every location in image, sum over prototypes is 1                
+    )
     pool_layer = nn.Sequential(
         nn.AdaptiveMaxPool2d(output_size=(1, 1)),  #outputs (bs, ps,1,1)
         nn.Flatten()  #outputs (bs, ps)
     )
 
-    if args.bias:
-        classification_layer = NonNegLinear(num_prototypes,
-                                            num_classes,
-                                            bias=True)
-    else:
-        classification_layer = NonNegLinear(num_prototypes,
-                                            num_classes,
-                                            bias=False)
+    classification_layer = NonNegLinear(num_prototypes, num_classes, bias=True)
 
     return features, add_on_layers, pool_layer, classification_layer, num_prototypes

@@ -46,7 +46,7 @@ def vis_pred(net, vis_test_dir, classes, device, args: argparse.Namespace):
         vis_test_set,
         batch_size=1,
         shuffle=False,
-        pin_memory=not args.disable_cuda and torch.cuda.is_available(),
+        pin_memory=torch.cuda.is_available(),
         num_workers=num_workers)
     imgs = vis_test_set.imgs
 
@@ -87,8 +87,8 @@ def vis_pred(net, vis_test_dir, classes, device, args: argparse.Namespace):
                 simweights = []
                 for prototype_idx in sorted_pooled_indices:
                     simweight = pooled[0, prototype_idx].item(
-                    ) * net.module._classification.weight[
-                        pred_class_idx, prototype_idx].item()
+                    ) * net._classification.weight[pred_class_idx,
+                                                   prototype_idx].item()
                     simweights.append(simweight)
                     if abs(simweight) > 0.01:
                         max_h, max_idx_h = torch.max(
@@ -114,7 +114,7 @@ def vis_pred(net, vis_test_dir, classes, device, args: argparse.Namespace):
                                 (str(f"{simweight:.3f}"),
                                  str(prototype_idx.item()),
                                  str(f"{pooled[0,prototype_idx].item():.3f}"),
-                                 str(f"{net.module._classification.weight[pred_class_idx, prototype_idx].item():.3f}"
+                                 str(f"{net._classification.weight[pred_class_idx, prototype_idx].item():.3f}"
                                      ))))
                         draw = D.Draw(image)
                         draw.rectangle([(max_idx_w * skip, max_idx_h * skip),
@@ -130,7 +130,7 @@ def vis_pred(net, vis_test_dir, classes, device, args: argparse.Namespace):
                                 (str(f"{simweight:.3f}"),
                                  str(prototype_idx.item()),
                                  str(f"{pooled[0,prototype_idx].item():.3f}"),
-                                 str(f"{net.module._classification.weight[pred_class_idx, prototype_idx].item():.3f}"
+                                 str(f"{net._classification.weight[pred_class_idx, prototype_idx].item():.3f}"
                                      ))))
 
                         # visualise softmaxes as heatmap
@@ -148,8 +148,9 @@ def vis_pred(net, vis_test_dir, classes, device, args: argparse.Namespace):
                             heatmap = np.float32(heatmap) / 255
                             heatmap = heatmap[..., ::-1]  # OpenCV's BGR to RGB
                             heatmap_img = 0.2 * np.float32(
-                                heatmap) + 0.6 * np.float32(img_tensor.squeeze(
-                                ).numpy().transpose(1, 2, 0))
+                                heatmap) + 0.6 * np.float32(
+                                    img_tensor.squeeze(0).numpy().transpose(
+                                        1, 2, 0))
                             plt.imsave(fname=os.path.join(
                                 save_path,
                                 'heatmap_p%s.png' % str(prototype_idx.item())),
@@ -190,7 +191,7 @@ def vis_pred_experiments(net,
         vis_test_set,
         batch_size=1,
         shuffle=False,
-        pin_memory=not args.disable_cuda and torch.cuda.is_available(),
+        pin_memory=torch.cuda.is_available(),
         num_workers=num_workers)
     imgs = vis_test_set.imgs
 
@@ -238,8 +239,8 @@ def vis_pred_experiments(net,
                 simweights = []
                 for prototype_idx in sorted_pooled_indices:
                     simweight = pooled[0, prototype_idx].item(
-                    ) * net.module._classification.weight[
-                        pred_class_idx, prototype_idx].item()
+                    ) * net._classification.weight[pred_class_idx,
+                                                   prototype_idx].item()
 
                     simweights.append(simweight)
                     if abs(simweight) > 0.01:
@@ -267,7 +268,7 @@ def vis_pred_experiments(net,
                                 (str(f"{simweight:.3f}"),
                                  str(prototype_idx.item()),
                                  str(f"{pooled[0, prototype_idx].item():.3f}"),
-                                 str(f"{net.module._classification.weight[pred_class_idx, prototype_idx].item():.3f}"
+                                 str(f"{net._classification.weight[pred_class_idx, prototype_idx].item():.3f}"
                                      ))))
                         draw = D.Draw(image)
                         draw.rectangle([(max_idx_w * skip, max_idx_h * skip),
@@ -283,7 +284,7 @@ def vis_pred_experiments(net,
                                 (str(f"{simweight:.3f}"),
                                  str(prototype_idx.item()),
                                  str(f"{pooled[0, prototype_idx].item():.3f}"),
-                                 str(f"{net.module._classification.weight[pred_class_idx, prototype_idx].item():.3f}"
+                                 str(f"{net._classification.weight[pred_class_idx, prototype_idx].item():.3f}"
                                      ))))
 
     # Calculate accuracy

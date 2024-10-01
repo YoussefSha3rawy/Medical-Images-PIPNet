@@ -23,8 +23,7 @@ def eval_pipnet(net,
     # Keep an info dict about the procedure
     info = dict()
     # Build a confusion matrix
-    cm = np.zeros((net.module._num_classes, net.module._num_classes),
-                  dtype=int)
+    cm = np.zeros((net._num_classes, net._num_classes), dtype=int)
 
     global_top1acc = 0.
     global_top5acc = 0.
@@ -47,20 +46,19 @@ def eval_pipnet(net,
         xs, ys = xs.to(device), ys.to(device)
 
         with torch.no_grad():
-            net.module._classification.weight.copy_(
-                torch.clamp(net.module._classification.weight.data - 1e-3,
-                            min=0.))
+            net._classification.weight.copy_(
+                torch.clamp(net._classification.weight.data - 1e-3, min=0.))
             # Use the model to classify this batch of input data
             _, pooled, out = net(xs, inference=True)
             max_out_score, ys_pred = torch.max(out, dim=1)
             ys_pred_scores = torch.amax(F.softmax((torch.log1p(
-                out**net.module._classification.normalization_multiplier)),
+                out**net._classification.normalization_multiplier)),
                                                   dim=1),
                                         dim=1)
             abstained += (max_out_score.shape[0] -
                           torch.count_nonzero(max_out_score))
-            repeated_weight = net.module._classification.weight.unsqueeze(
-                1).repeat(1, pooled.shape[0], 1)
+            repeated_weight = net._classification.weight.unsqueeze(1).repeat(
+                1, pooled.shape[0], 1)
             sim_scores_anz = torch.count_nonzero(torch.gt(
                 torch.abs(pooled * repeated_weight), 1e-3).float(),
                                                  dim=2).float()
@@ -80,8 +78,8 @@ def eval_pipnet(net,
             global_anz += almost_nz.sum().item()
 
             # Update the confusion matrix
-            cm_batch = np.zeros(
-                (net.module._num_classes, net.module._num_classes), dtype=int)
+            cm_batch = np.zeros((net._num_classes, net._num_classes),
+                                dtype=int)
             for y_pred, y_true in zip(ys_pred, ys):
                 cm[y_true][y_pred] += 1
                 cm_batch[y_true][y_pred] += 1
@@ -106,15 +104,14 @@ def eval_pipnet(net,
           abstained.item(),
           "images",
           flush=True)
-    info['num non-zero prototypes'] = torch.gt(
-        net.module._classification.weight, 1e-3).any(dim=0).sum().item()
-    print(
-        "sparsity ratio: ",
-        (torch.numel(net.module._classification.weight) - torch.count_nonzero(
-            torch.nn.functional.relu(net.module._classification.weight -
-                                     1e-3)).item()) /
-        torch.numel(net.module._classification.weight),
-        flush=True)
+    info['num non-zero prototypes'] = torch.gt(net._classification.weight,
+                                               1e-3).any(dim=0).sum().item()
+    print("sparsity ratio: ",
+          (torch.numel(net._classification.weight) - torch.count_nonzero(
+              torch.nn.functional.relu(net._classification.weight -
+                                       1e-3)).item()) /
+          torch.numel(net._classification.weight),
+          flush=True)
     info['confusion_matrix'] = cm
     info['val_accuracy'] = acc_from_cm(cm)
     info['top1_accuracy'] = global_top1acc / len(test_loader.dataset)
@@ -124,16 +121,16 @@ def eval_pipnet(net,
         test_loader.dataset)
     info['almost_nonzeros'] = global_anz / len(test_loader.dataset)
 
-    if net.module._num_classes == 2:
+    if net._num_classes == 2:
         tp = cm[0][0]
         fn = cm[0][1]
         fp = cm[1][0]
         tn = cm[1][1]
-        print("TP: ", tp, "FN: ", fn, "FP:", fp, "TN:", tn, flush=True)
+        print("TP: ", tp, "FN: ", fn, "FP:", fp, "TN:", tn)
         sensitivity = tp / (tp + fn)
         specificity = tn / (tn + fp)
-        print("\n Epoch", epoch, flush=True)
-        print("Confusion matrix: ", cm, flush=True)
+        print("\n Epoch", epoch)
+        print("Confusion matrix: ", cm)
         try:
             for classname, classidx in test_loader.dataset.class_to_idx.items(
             ):
@@ -205,7 +202,7 @@ def get_thresholds(net,
 
     outputs_per_class = dict()
     outputs_per_correct_class = dict()
-    for c in range(net.module._num_classes):
+    for c in range(net._num_classes):
         outputs_per_class[c] = []
         outputs_per_correct_class[c] = []
     # Show progress on progress bar
@@ -240,7 +237,7 @@ def get_thresholds(net,
     correct_class_thresholds = dict()
     all_outputs = []
     all_correct_outputs = []
-    for c in range(net.module._num_classes):
+    for c in range(net._num_classes):
         if len(outputs_per_class[c]) > 0:
             outputs_c = outputs_per_class[c]
             all_outputs += outputs_c
@@ -258,7 +255,7 @@ def get_thresholds(net,
     # if class is not predicted there is no threshold. we set it as the minimum value for any other class
     mean_ct = np.mean(list(class_thresholds.values()))
     mean_cct = np.mean(list(correct_class_thresholds.values()))
-    for c in range(net.module._num_classes):
+    for c in range(net._num_classes):
         if c not in class_thresholds.keys():
             print(c,
                   "not in class thresholds. Setting to mean threshold",
@@ -270,7 +267,7 @@ def get_thresholds(net,
     calculated_percentile = 0
     correctly_classified = 0
     total = 0
-    for c in range(net.module._num_classes):
+    for c in range(net._num_classes):
         correctly_classified += sum(i > class_thresholds[c]
                                     for i in outputs_per_class[c])
         total += len(outputs_per_class[c])
@@ -281,7 +278,7 @@ def get_thresholds(net,
             class_thresholds.update(
                 (x, y * 0.999) for x, y in class_thresholds.items())
             correctly_classified = 0
-            for c in range(net.module._num_classes):
+            for c in range(net._num_classes):
                 correctly_classified += sum(i >= class_thresholds[c]
                                             for i in outputs_per_class[c])
             calculated_percentile = correctly_classified / total
