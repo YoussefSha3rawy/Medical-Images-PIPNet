@@ -5,144 +5,161 @@ import torch.optim
 import torch.utils.data
 import torchvision
 import torchvision.transforms as transforms
-from typing import Tuple, Dict
-from torch import Tensor
 import socket
+import os
 
-hostname = socket.gethostname()
 
-
-def get_data(image_size):
+def get_data_directory():
     """
-    Load the proper dataset based on the parsed arguments
+    Returns the data directory based on the machine the code is running on.
     """
+    hostname = socket.gethostname()
     if hostname.endswith('local'):  # Example check for local machine names
         print("Running on Macbook locally")
-        data_dir = '/Users/youssefshaarawy/Documents/Datasets/OCT2017/'
+        return '/Users/youssefshaarawy/Documents/Datasets/OCT2017/'
     else:
         print(f"Running on remote server: {hostname}")
-        data_dir = "/users/adfx751/Datasets/OCT2017/"
-
-    train_dir = data_dir + 'train_balanced'
-    val_dir = data_dir + 'val/'
-    return get_oct(train_dir, val_dir, image_size)
+        return "/users/adfx751/Datasets/OCT2017/"
 
 
-def get_dataloaders(args: argparse.Namespace):
+def get_transforms(img_size):
     """
-    Get data loaders
+    Returns the transformations for the dataset.
     """
-    # Obtain the dataset
-    trainset, projectset, valset, classes, targets = get_data(args.image_size)
-
-    # Determine if GPU should be used
-    cuda = torch.cuda.is_available()
-    to_shuffle = True
-    sampler = None
-
-    num_workers = args.num_workers
-
-    if targets is None:
-        raise ValueError(
-            "Weighted loss not implemented for this dataset. Targets should be restructured"
-        )
-    # https://discuss.pytorch.org/t/dataloader-using-subsetrandomsampler-and-weightedrandomsampler-at-the-same-time/29907
-    class_sample_count = torch.tensor([
-        (targets == t).sum() for t in torch.unique(targets, sorted=True)
-    ])
-    weight = 1. / class_sample_count.float()
-    print("Weights for weighted sampler: ", weight)
-    samples_weight = torch.tensor([weight[t] for t in targets])
-    # Create sampler, dataset, loader
-    sampler = torch.utils.data.WeightedRandomSampler(samples_weight,
-                                                     len(samples_weight),
-                                                     replacement=True)
-    to_shuffle = False
-
-    pretrain_batchsize = args.batch_size_pretrain
-
-    trainloader = torch.utils.data.DataLoader(
-        trainset,
-        batch_size=args.batch_size,
-        shuffle=to_shuffle,
-        sampler=sampler,
-        pin_memory=cuda,
-        num_workers=num_workers,
-        worker_init_fn=np.random.seed(43),
-        drop_last=True)
-    trainloader_pretraining = torch.utils.data.DataLoader(
-        trainset,
-        batch_size=pretrain_batchsize,
-        shuffle=to_shuffle,
-        sampler=sampler,
-        pin_memory=cuda,
-        num_workers=num_workers,
-        worker_init_fn=np.random.seed(43),
-        drop_last=True)
-
-    projectloader = torch.utils.data.DataLoader(
-        projectset,
-        batch_size=1,
-        shuffle=False,
-        pin_memory=cuda,
-        num_workers=num_workers,
-        worker_init_fn=np.random.seed(43),
-        drop_last=False)
-    valloader = torch.utils.data.DataLoader(valset,
-                                            batch_size=args.batch_size,
-                                            shuffle=True,
-                                            pin_memory=cuda,
-                                            num_workers=num_workers,
-                                            worker_init_fn=np.random.seed(43),
-                                            drop_last=False)
-    print("Num classes (k) = ", len(classes), classes[:5], "etc.")
-    return trainloader, trainloader_pretraining, projectloader, valloader, classes
-
-
-def create_datasets(transform1, transform2, transform_no_augment,
-                    train_dir: str, val_dir: str):
-
-    train = torchvision.datasets.ImageFolder(train_dir)
-    classes = train.classes
-    targets = train.targets
-
-    valset = torchvision.datasets.ImageFolder(val_dir,
-                                              transform=transform_no_augment)
-
-    trainset = TwoAugSupervisedDataset(train,
-                                       transform1=transform1,
-                                       transform2=transform2)
-    projectset = torchvision.datasets.ImageFolder(
-        train_dir, transform=transform_no_augment)
-
-    return trainset, projectset, valset, classes, torch.LongTensor(targets)
-
-
-def get_oct(train_dir: str, test_dir: str, img_size: int):
-    # Validation size was set to 0.2, such that 80% of the data is used for training
     mean = (0.485, 0.456, 0.406)
     std = (0.229, 0.224, 0.225)
-    normalize = transforms.Normalize(mean=mean, std=std)
-    transform_no_augment = transforms.Compose([
+
+    normalisee = transforms.Normalize(mean=mean, std=std)
+
+    transform_normal = transforms.Compose([
         transforms.Resize(size=(img_size, img_size)),
-        transforms.ToTensor(), normalize
+        transforms.ToTensor(), normalisee
     ])
 
-    transform1 = transforms.Compose([
+    transform_1 = transforms.Compose([
         transforms.Resize(size=(img_size + 48, img_size + 48)),
         TrivialAugmentWideNoColor(),
         transforms.RandomHorizontalFlip(),
         transforms.RandomResizedCrop(img_size + 8, scale=(0.95, 1.))
     ])
-    transform2 = transforms.Compose([
+
+    transform_2 = transforms.Compose([
         TrivialAugmentWideNoShape(),
-        transforms.RandomCrop(size=(img_size, img_size)),  #includes crop
+        transforms.RandomCrop(size=(img_size, img_size)),  # Includes crop
         transforms.ToTensor(),
-        normalize
+        normalisee
     ])
 
-    return create_datasets(transform1, transform2, transform_no_augment,
-                           train_dir, test_dir)
+    return transform_normal, transform_1, transform_2
+
+
+def compute_class_weights(targets):
+    """
+    Compute class weights for weighted sampling.
+    """
+    if targets is None:
+        raise ValueError(
+            "Weighted loss not implemented for this dataset. Targets should be restructured"
+        )
+
+    class_count = torch.tensor([(targets == t).sum()
+                                for t in torch.unique(targets, sorted=True)])
+    weights = 1. / class_count.float()
+    print("Weights for weighted sampler: ", weights)
+
+    samples_weight = torch.tensor([weights[t] for t in targets])
+    return samples_weight
+
+
+def create_dataloader(dataset, batch_size, shuffle, sampler, cuda, num_workers,
+                      drop_last):
+    """
+    Create a data loader with the given parameters.
+    """
+    return torch.utils.data.DataLoader(dataset,
+                                       batch_size=batch_size,
+                                       shuffle=shuffle,
+                                       sampler=sampler,
+                                       pin_memory=cuda,
+                                       num_workers=num_workers,
+                                       worker_init_fn=np.random.seed(43),
+                                       drop_last=drop_last)
+
+
+def get_dataloaders(args: argparse.Namespace):
+    """
+    Get the data loaders for training, validation, and project use.
+    """
+
+    # Get the dataset directory based on the machine
+    data_dir = get_data_directory()
+
+    train_dir = os.path.join(data_dir, 'train_balanced')
+    val_dir = os.path.join(data_dir, 'val/')
+
+    # Get transformations
+    transform_normal, transform_1, transform_2 = get_transforms(
+        args.image_size)
+
+    # Load datasets
+    original_train_dataset = torchvision.datasets.ImageFolder(train_dir)
+    val_dataset = torchvision.datasets.ImageFolder(val_dir,
+                                                   transform=transform_normal)
+    projection_dataset = torchvision.datasets.ImageFolder(
+        train_dir, transform=transform_normal)
+
+    classes = original_train_dataset.classes
+    targets = torch.LongTensor(original_train_dataset.targets)
+
+    # Prepare training dataset with augmentations
+    train_dataset = TwoAugSupervisedDataset(original_train_dataset,
+                                            transform1=transform_1,
+                                            transform2=transform_2)
+
+    # Compute class weights and create a weighted sampler
+    samples_weight = compute_class_weights(targets)
+    sampler = torch.utils.data.WeightedRandomSampler(samples_weight,
+                                                     len(samples_weight),
+                                                     replacement=True)
+
+    # Set common parameters
+    cuda = torch.cuda.is_available()
+    num_workers = args.num_workers
+    shuffle = False
+
+    # Create data loaders
+    train_dataloader = create_dataloader(train_dataset,
+                                         args.batch_size,
+                                         shuffle,
+                                         sampler,
+                                         cuda,
+                                         num_workers,
+                                         drop_last=True)
+    train_dataloader_pretraining = create_dataloader(train_dataset,
+                                                     args.batch_size_pretrain,
+                                                     shuffle,
+                                                     sampler,
+                                                     cuda,
+                                                     num_workers,
+                                                     drop_last=True)
+    projection_dataloader = create_dataloader(projection_dataset,
+                                              batch_size=1,
+                                              shuffle=False,
+                                              sampler=None,
+                                              cuda=cuda,
+                                              num_workers=num_workers,
+                                              drop_last=False)
+    val_dataloader = create_dataloader(val_dataset,
+                                       args.batch_size,
+                                       shuffle=True,
+                                       sampler=None,
+                                       cuda=cuda,
+                                       num_workers=num_workers,
+                                       drop_last=False)
+
+    print("Num classes (k) = ", len(classes), classes[:5], "etc.")
+
+    return train_dataloader, train_dataloader_pretraining, projection_dataloader, val_dataloader, classes
 
 
 class TwoAugSupervisedDataset(torch.utils.data.Dataset):

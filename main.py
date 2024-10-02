@@ -17,93 +17,96 @@ from wandb_logger import WandbLogger
 
 def main():
 
+    # Set seed for reproducibility
     initialise_seed(43)
 
+    # Parse and get arguments
     args = get_args()
-    assert args.batch_size > 1
 
-    # Create a logger
-    log = Log(args.log_dir)
-    print("Log dir: ", args.log_dir)
-    # Log the run arguments
-    save_args(args, log.metadata_dir)
+    # Create a logger object for logging model information
+    logger = Log(args.log_dir)
+    print("Log directory: ", args.log_dir)
 
+    # Log run arguments for future reference
+    save_args(args, logger.metadata_dir)
+
+    # Set up Wandb logger for experiment tracking
     wandb_logger = WandbLogger(args,
                                logger_name='PIPNet',
                                project='FinalProject')
 
     global device
+    # Set the device (GPU or CPU or MPS)
     device = set_device()
-
-    # Log which device was actually used
     print("Device used: ", device)
 
-    # Obtain the dataset and dataloaders
-    trainloader, trainloader_pretraining, projectloader, valloader, classes = get_dataloaders(
+    # Obtain datasets and dataloaders
+    train_loader, pretrain_loader, project_loader, val_loader, class_names = get_dataloaders(
         args)
 
-    print("Classes: ", valloader.dataset.class_to_idx)
+    print("Classes: ", val_loader.dataset.class_to_idx)
 
-    # Create a PIP-Net
-    net = PIPNet(
-        num_classes=len(classes),
+    # Initialize PIP-Net model
+    pipnet_model = PIPNet(
+        num_classes=len(class_names),
         args=args,
-    )
-    net = net.to(device=device)
+    ).to(device=device)
 
-    optimizer_net, optimizer_classifier, params_to_freeze, params_to_train, params_backbone = get_optimizer_nn(
-        net, args)
+    # Get optimizers and parameters to train/freeze
+    optimizer_pipnet, optimizer_classifier, freeze_params, train_params, backbone_params = get_optimizer_nn(
+        pipnet_model, args)
 
-    # Initialize or load model
+    # Load or initialize the model
     with torch.no_grad():
         if args.state_dict_dir_net != '':
-            load_checkpoint(args, classes, net, optimizer_net)
+            load_checkpoint(args, class_names, pipnet_model, optimizer_pipnet)
         else:
-            initialise_net(net)
+            initialise_model(pipnet_model)
 
-    # Define classification loss function and scheduler
+    # Define classification loss function and learning rate scheduler
     criterion = nn.NLLLoss(reduction='mean').to(device)
-    scheduler_net = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer_net,
-        T_max=len(trainloader_pretraining) * args.epochs_pretrain,
+    scheduler_pipnet = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer_pipnet,
+        T_max=len(pretrain_loader) * args.epochs_pretrain,
         eta_min=args.lr_block / 100.,
         last_epoch=-1)
 
-    # Forward one batch through the backbone to get the latent output size
+    # Forward a batch through the backbone to determine latent output size
     with torch.no_grad():
-        xs1, _, _ = next(iter(trainloader))
-        xs1 = xs1.to(device)
-        proto_features, _, _ = net(xs1)
-        wshape = proto_features.shape[-1]
-        args.wshape = wshape  #needed for calculating image patch size
+        batch_inputs, _, _ = next(iter(train_loader))
+        batch_inputs = batch_inputs.to(device)
+        proto_features, _, _ = pipnet_model(batch_inputs)
+        output_size = proto_features.shape[-1]
+        args.wshape = output_size  # needed for calculating image patch size
         print("Output shape: ", proto_features.shape)
 
-    # Create a csv log for storing the test accuracy (top 1 and top 5), mean train accuracy and mean loss for each epoch
-    log.create_log('log_epoch_overview', 'epoch', 'test_top1_acc',
-                   'mean_train_loss_during_epoch')
+    # Log the performance metrics
+    logger.create_log('log_epoch_overview', 'epoch', 'test_top1_acc',
+                      'mean_train_loss_during_epoch')
 
-    lrs_pretrain_net = []
-    # PRETRAINING PROTOTYPES PHASE
+    pretrain_learning_rates = []
+    # PRETRAINING PHASE (Training prototypes)
     for epoch in range(1, args.epochs_pretrain + 1):
-        for param in params_to_train:
+        # Adjust trainable/frozen parameters for pretraining
+        for param in train_params:
             param.requires_grad = True
-        for param in net._add_on.parameters():
+        for param in pipnet_model._add_on.parameters():
             param.requires_grad = True
-        for param in net._classification.parameters():
+        for param in pipnet_model._classification.parameters():
             param.requires_grad = False
-        for param in params_to_freeze:
-            param.requires_grad = True  # can be set to False when you want to freeze more layers
-        for param in params_backbone:
-            param.requires_grad = False  #can be set to True when you want to train whole backbone (e.g. if dataset is very different from ImageNet)
+        for param in freeze_params:
+            param.requires_grad = True
+        for param in backbone_params:
+            param.requires_grad = False
 
         print("\nPretrain Epoch", epoch)
 
         # Pretrain prototypes
-        train_info = train_pipnet(net,
-                                  trainloader_pretraining,
-                                  optimizer_net,
+        train_info = train_pipnet(pipnet_model,
+                                  pretrain_loader,
+                                  optimizer_pipnet,
                                   optimizer_classifier,
-                                  scheduler_net,
+                                  scheduler_pipnet,
                                   None,
                                   criterion,
                                   epoch,
@@ -111,134 +114,127 @@ def main():
                                   device,
                                   pretrain=True,
                                   finetune=False)
-        lrs_pretrain_net += train_info['lrs_net']
-        log.log_values('log_epoch_overview', epoch, "n.a.", train_info['loss'])
+        pretrain_learning_rates += train_info['lrs_net']
+        logger.log_values('log_epoch_overview', epoch, "n.a.",
+                          train_info['loss'])
         wandb_logger.log_dict(train_info)
+
+    # Save pretrained model checkpoint if not loaded from checkpoint
     if args.state_dict_dir_net == '':
-        net.eval()
+        pipnet_model.eval()
         torch.save(
             {
-                'model_state_dict': net.state_dict(),
-                'optimizer_net_state_dict': optimizer_net.state_dict()
+                'model_state_dict': pipnet_model.state_dict(),
+                'optimizer_net_state_dict': optimizer_pipnet.state_dict()
             },
             os.path.join(os.path.join(args.log_dir, 'checkpoints'),
                          'net_pretrained'))
-        net.train()
+        pipnet_model.train()
+
+    # Visualize the top k prototypes after pretraining
     with torch.no_grad():
         if 'convnext' in args.net and args.epochs_pretrain > 0:
-            topks = visualize_topk(net, projectloader, len(classes), device,
-                                   'visualised_pretrained_prototypes_topk',
-                                   args)
+            visualize_topk(pipnet_model, project_loader, len(class_names),
+                           device, 'visualised_pretrained_prototypes_topk',
+                           args)
 
     # SECOND TRAINING PHASE
-    # re-initialize optimizers and schedulers for second training phase
-    optimizer_net, optimizer_classifier, params_to_freeze, params_to_train, params_backbone = get_optimizer_nn(
-        net, args)
-    scheduler_net = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer_net,
-        T_max=len(trainloader) * args.epochs,
+    # Re-initialize optimizers and schedulers for the second training phase
+    optimizer_pipnet, optimizer_classifier, freeze_params, train_params, backbone_params = get_optimizer_nn(
+        pipnet_model, args)
+    scheduler_pipnet = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer_pipnet,
+        T_max=len(train_loader) * args.epochs,
         eta_min=args.lr_net / 100.)
-    # scheduler for the classification layer is with restarts, such that the model can re-active zeroed-out prototypes. Hence an intuitive choice.
     scheduler_classifier = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer_classifier, T_0=10, eta_min=0.001, T_mult=1, verbose=False)
 
-    for param in net.parameters():
+    # Freeze all parameters except the classification layer initially
+    for param in pipnet_model.parameters():
         param.requires_grad = False
-    for param in net._classification.parameters():
+    for param in pipnet_model._classification.parameters():
         param.requires_grad = True
 
-    frozen = True
-    lrs_net = []
-    lrs_classifier = []
+    # Fine-tuning setup
+    is_frozen = True
+    net_learning_rates = []
+    classifier_learning_rates = []
+    best_val_accuracy = 0
 
-    best_acc = 0
+    # Main training loop for the second phase
     for epoch in range(1, args.epochs + 1):
-        epochs_to_finetune = 3  #during finetuning, only train classification layer and freeze rest. usually done for a few epochs (at least 1, more depends on size of dataset)
-        if epoch <= epochs_to_finetune and (args.epochs_pretrain > 0
-                                            or args.state_dict_dir_net != ''):
-            for param in net._add_on.parameters():
+        fine_tune_epochs = 3  # Freeze everything except the classification layer during fine-tuning
+        if epoch <= fine_tune_epochs and (args.epochs_pretrain > 0
+                                          or args.state_dict_dir_net != ''):
+            # Freeze most of the network
+            for param in pipnet_model._add_on.parameters():
                 param.requires_grad = False
-            for param in params_to_train:
+            for param in train_params:
                 param.requires_grad = False
-            for param in params_to_freeze:
+            for param in freeze_params:
                 param.requires_grad = False
-            for param in params_backbone:
+            for param in backbone_params:
                 param.requires_grad = False
-            finetune = True
-
+            is_finetuning = True
         else:
-            finetune = False
-            if frozen:
-                # unfreeze backbone
-                if epoch > (args.freeze_epochs):
-                    for param in net._add_on.parameters():
+            is_finetuning = False
+            if is_frozen:
+                # Unfreeze the backbone after the fine-tuning phase
+                if epoch > args.freeze_epochs:
+                    for param in pipnet_model._add_on.parameters():
                         param.requires_grad = True
-                    for param in params_to_freeze:
+                    for param in freeze_params:
                         param.requires_grad = True
-                    for param in params_to_train:
+                    for param in train_params:
                         param.requires_grad = True
-                    for param in params_backbone:
+                    for param in backbone_params:
                         param.requires_grad = True
-                    frozen = False
-                # freeze first layers of backbone, train rest
+                    is_frozen = False
                 else:
-                    for param in params_to_freeze:
-                        param.requires_grad = True  #Can be set to False if you want to train fewer layers of backbone
-                    for param in net._add_on.parameters():
+                    # Only freeze first layers of the backbone
+                    for param in freeze_params:
                         param.requires_grad = True
-                    for param in params_to_train:
+                    for param in pipnet_model._add_on.parameters():
                         param.requires_grad = True
-                    for param in params_backbone:
+                    for param in train_params:
+                        param.requires_grad = True
+                    for param in backbone_params:
                         param.requires_grad = False
 
-        print("\n Epoch", epoch, "frozen:", frozen)
-        if (epoch == args.epochs or epoch % 30 == 0) and args.epochs > 1:
-            # SET SMALL WEIGHTS TO ZERO
-            with torch.no_grad():
-                torch.set_printoptions(profile="full")
-                net._classification.weight.copy_(
-                    torch.clamp(net._classification.weight.data - 0.001,
-                                min=0.))
-                print("Classifier weights: ",
-                      net._classification.weight[
-                          net._classification.weight.nonzero(as_tuple=True)],
-                      (net._classification.weight[
-                          net._classification.weight.nonzero(
-                              as_tuple=True)]).shape,
-                      flush=True)
-                print("Classifier bias: ",
-                      net._classification.bias,
-                      flush=True)
-                torch.set_printoptions(profile="default")
+        print("\n Epoch", epoch, "frozen:", is_frozen)
 
-        train_info = train_pipnet(net,
-                                  trainloader,
-                                  optimizer_net,
+        # Train PIP-Net model for the current epoch
+        train_info = train_pipnet(pipnet_model,
+                                  train_loader,
+                                  optimizer_pipnet,
                                   optimizer_classifier,
-                                  scheduler_net,
+                                  scheduler_pipnet,
                                   scheduler_classifier,
                                   criterion,
                                   epoch,
                                   args.epochs,
                                   device,
                                   pretrain=False,
-                                  finetune=finetune)
-        lrs_net += train_info['lrs_net']
-        lrs_classifier += train_info['lrs_class']
-        # Evaluate model
-        eval_info = eval_pipnet(net, valloader, epoch, device, log)
-        log.log_values('log_epoch_overview', epoch, eval_info['top1_accuracy'],
-                       train_info['loss'])
+                                  finetune=is_finetuning)
+        net_learning_rates += train_info['lrs_net']
+        classifier_learning_rates += train_info['lrs_class']
+
+        # Evaluate the model on validation set
+        eval_info = eval_pipnet(pipnet_model, val_loader, epoch, device,
+                                logger)
+        logger.log_values('log_epoch_overview', epoch,
+                          eval_info['top1_accuracy'], train_info['loss'])
         wandb_logger.log_dict(eval_info)
 
+        # Save trained model checkpoint after evaluation
         with torch.no_grad():
-            net.eval()
+            pipnet_model.eval()
             torch.save(
                 {
                     'model_state_dict':
-                    net.state_dict(),
+                    pipnet_model.state_dict(),
                     'optimizer_net_state_dict':
-                    optimizer_net.state_dict(),
+                    optimizer_pipnet.state_dict(),
                     'optimizer_classifier_state_dict':
                     optimizer_classifier.state_dict()
                 },
@@ -246,102 +242,111 @@ def main():
                              'net_trained'))
 
             if epoch % 30 == 0:
-                net.eval()
+                pipnet_model.eval()
                 torch.save(
                     {
                         'model_state_dict':
-                        net.state_dict(),
+                        pipnet_model.state_dict(),
                         'optimizer_net_state_dict':
-                        optimizer_net.state_dict(),
+                        optimizer_pipnet.state_dict(),
                         'optimizer_classifier_state_dict':
                         optimizer_classifier.state_dict()
                     },
                     os.path.join(os.path.join(args.log_dir, 'checkpoints'),
-                                 'net_trained_%s' % str(epoch)))
+                                 f'net_trained_{epoch}'))
 
-        if eval_info['val_accuracy'] > best_acc:
-            best_acc = eval_info['val_accuracy']
-            net.eval()
+        # Save best model if current accuracy is higher than previous best
+        if eval_info['val_accuracy'] > best_val_accuracy:
+            best_val_accuracy = eval_info['val_accuracy']
+            pipnet_model.eval()
             torch.save(
                 {
                     'epoch':
                     epoch,
                     'model_state_dict':
-                    net.state_dict(),
+                    pipnet_model.state_dict(),
                     'optimizer_net_state_dict':
-                    optimizer_net.state_dict(),
+                    optimizer_pipnet.state_dict(),
                     'optimizer_classifier_state_dict':
                     optimizer_classifier.state_dict()
                 },
                 os.path.join(os.path.join(args.log_dir, 'checkpoints'),
                              'net_trained_best'))
 
-    # Print weights and relevant prototypes per class
-    for c in range(net._classification.weight.shape[0]):
-        relevant_ps = []
-        proto_weights = net._classification.weight[c, :]
-        for p in range(net._classification.weight.shape[1]):
-            if proto_weights[p] > 1e-3:
-                relevant_ps.append((p, proto_weights[p].item()))
-        print("Class",
-              c,
-              "(",
-              list(valloader.dataset.class_to_idx.keys())[list(
-                  valloader.dataset.class_to_idx.values()).index(c)],
-              "):",
-              "has",
-              len(relevant_ps),
-              "relevant prototypes: ",
-              relevant_ps,
-              flush=True)
+    # Print relevant prototypes and their weights for each class
+    for class_idx in range(pipnet_model._classification.weight.shape[0]):
+        relevant_prototypes = []
+        prototype_weights = pipnet_model._classification.weight[class_idx, :]
+        for proto_idx in range(pipnet_model._classification.weight.shape[1]):
+            if prototype_weights[proto_idx] > 1e-3:
+                relevant_prototypes.append(
+                    (proto_idx, prototype_weights[proto_idx].item()))
+        class_name = list(val_loader.dataset.class_to_idx.keys())[list(
+            val_loader.dataset.class_to_idx.values()).index(class_idx)]
+        print(
+            f"Class {class_idx} ({class_name}): has {len(relevant_prototypes)} relevant prototypes: {relevant_prototypes}",
+            flush=True)
 
+    # Load the best trained model checkpoint
     best_checkpoint = torch.load(
         os.path.join(os.path.join(args.log_dir, 'checkpoints'),
                      'net_trained_best'))
-    net.load_state_dict(best_checkpoint['model_state_dict'])
+    pipnet_model.load_state_dict(best_checkpoint['model_state_dict'])
     print(f'Loaded best model from epoch: {best_checkpoint["epoch"]}',
           flush=True)
 
-    # visualize predictions
-    visualize(net, projectloader, len(classes), device,
+    # Visualize predictions and prototypes after training
+    visualize(pipnet_model, project_loader, len(class_names), device,
               'visualised_prototypes', args)
 
+    # If extra test images are provided, visualize their predictions
     if os.path.exists(args.extra_test_image_folder):
-        vis_pred_experiments(net, args.extra_test_image_folder, classes,
-                             device, args, wandb_logger)
+        vis_pred_experiments(pipnet_model, args.extra_test_image_folder,
+                             class_names, device, args, wandb_logger)
 
-    print("Done!")
-
-
-def initialise_net(net):
-    net._add_on.apply(init_weights_xavier)
-    torch.nn.init.normal_(net._classification.weight, mean=1.0, std=0.1)
-    torch.nn.init.constant_(net._classification.bias, val=0.)
-    torch.nn.init.constant_(net._multiplier, val=2.)
-    net._multiplier.requires_grad = False
+    print("Training and evaluation completed successfully!")
 
 
-def load_checkpoint(args, classes, net, optimizer_net):
-    epoch = 0
+# Function to initialize the network with Xavier weights for the prototypes and specific values for the classifier
+def initialise_model(pipnet_model):
+    pipnet_model._add_on.apply(init_weights_xavier)  # Initialize add-on layers
+    torch.nn.init.normal_(pipnet_model._classification.weight,
+                          mean=1.0,
+                          std=0.1)  # Initialize classification layer weights
+    torch.nn.init.constant_(pipnet_model._classification.bias,
+                            val=0.)  # Initialize classification layer bias
+    torch.nn.init.constant_(pipnet_model._multiplier,
+                            val=2.)  # Initialize the multiplier parameter
+    pipnet_model._multiplier.requires_grad = False  # Freeze the multiplier
+
+
+# Function to load a pretrained checkpoint
+def load_checkpoint(args, class_names, pipnet_model, optimizer_pipnet):
     checkpoint = torch.load(args.state_dict_dir_net, map_location=device)
-    net.load_state_dict(checkpoint['model_state_dict'], strict=True)
+    pipnet_model.load_state_dict(checkpoint['model_state_dict'], strict=True)
     print("Pretrained network loaded")
-    net._multiplier.requires_grad = False
+    pipnet_model._multiplier.requires_grad = False  # Freeze the multiplier
     try:
-        optimizer_net.load_state_dict(checkpoint['optimizer_net_state_dict'])
+        optimizer_pipnet.load_state_dict(
+            checkpoint['optimizer_net_state_dict'])
     except:
         pass
-    if torch.mean(net._classification.weight).item() > 1.0 and torch.mean(
-            net._classification.weight
-    ).item() < 3.0 and torch.count_nonzero(
-            torch.relu(net._classification.weight - 1e-5)
-    ).float().item() > 0.8 * (
-            net.num_prototypes * len(classes)
-    ):  #assume that the linear classification layer is not yet trained (e.g. when loading a pretrained backbone only)
-        torch.nn.init.normal_(net._classification.weight, mean=1.0, std=0.1)
-        torch.nn.init.constant_(net._multiplier, val=2.)
+
+    # Check if the classification layer needs to be reinitialized
+    if torch.mean(
+            pipnet_model._classification.weight).item() > 1.0 and torch.mean(
+                pipnet_model._classification.weight).item() < 3.0:
+        if torch.count_nonzero(
+                torch.relu(pipnet_model._classification.weight -
+                           1e-5)).float().item() > 0.8 * (
+                               pipnet_model.num_prototypes * len(class_names)):
+            torch.nn.init.normal_(pipnet_model._classification.weight,
+                                  mean=1.0,
+                                  std=0.1)
+            torch.nn.init.constant_(pipnet_model._multiplier, val=2.)
 
 
+# Function to set the device (GPU or CPU) for training
 def set_device():
     if torch.cuda.is_available():
         return torch.device('cuda')
@@ -351,6 +356,7 @@ def set_device():
         return torch.device('cpu')
 
 
+# Function to set the random seed for reproducibility
 def initialise_seed(seed: int):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)

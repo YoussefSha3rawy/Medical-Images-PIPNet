@@ -14,110 +14,103 @@ import torch.optim
 def get_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser('Train a PIP-Net')
+    parser = argparse.ArgumentParser('Train a PIP-Net')
+
     parser.add_argument(
         '--net',
         type=str,
         default='convnext_tiny_26',
         help=
-        'Base network used as backbone of PIP-Net. Default is convnext_tiny_26 with adapted strides to output 26x26 latent representations. Other option is convnext_tiny_13 that outputs 13x13 (smaller and faster to train, less fine-grained). Pretrained network on iNaturalist is only available for resnet50_inat. Options are: resnet18, resnet34, resnet50, resnet50_inat, resnet101, resnet152, convnext_tiny_26 and convnext_tiny_13.'
+        'Base network for PIP-Net. Default: convnext_tiny_26. Options: resnet18, resnet34, resnet50, resnet50_inat, resnet101, resnet152, convnext_tiny_26, convnext_tiny_13.'
     )
+
     parser.add_argument(
         '--batch_size',
         type=int,
         default=64,
-        help=
-        'Batch size when training the model using minibatch gradient descent. Batch size is multiplied with number of available GPUs'
-    )
-    parser.add_argument(
-        '--batch_size_pretrain',
-        type=int,
-        default=128,
-        help='Batch size when pretraining the prototypes (first training stage)'
-    )
-    parser.add_argument(
-        '--epochs',
-        type=int,
-        default=100,
-        help=
-        'The number of epochs PIP-Net should be trained (second training stage)'
-    )
+        help='Batch size for training (multiplied by number of GPUs).')
+
+    parser.add_argument('--batch_size_pretrain',
+                        type=int,
+                        default=128,
+                        help='Batch size for pretraining the prototypes.')
+
+    parser.add_argument('--epochs',
+                        type=int,
+                        default=100,
+                        help='Number of epochs for training (second stage).')
+
     parser.add_argument(
         '--epochs_pretrain',
         type=int,
         default=10,
-        help=
-        'Number of epochs to pre-train the prototypes (first training stage). Recommended to train at least until the align loss < 1'
-    )
+        help='Number of epochs for pretraining prototypes (first stage).')
+
     parser.add_argument(
         '--lr',
         type=float,
         default=0.05,
-        help=
-        'The optimizer learning rate for training the weights from prototypes to classes'
-    )
+        help='Learning rate for training weights from prototypes to classes.')
+
     parser.add_argument(
         '--lr_block',
         type=float,
         default=0.0005,
-        help=
-        'The optimizer learning rate for training the last conv layers of the backbone'
-    )
+        help='Learning rate for training the last convolutional layers.')
+
     parser.add_argument(
         '--lr_net',
         type=float,
         default=0.0005,
-        help=
-        'The optimizer learning rate for the backbone. Usually similar as lr_block.'
-    )
+        help='Learning rate for the backbone (usually same as lr_block).')
+
     parser.add_argument('--weight_decay',
                         type=float,
                         default=0.0,
-                        help='Weight decay used in the optimizer')
-    parser.add_argument('--disable_cuda',
-                        action='store_true',
-                        help='Flag that disables GPU usage if set')
-    parser.add_argument(
-        '--log_dir',
-        type=str,
-        default='',
-        help='The directory in which train progress should be logged')
+                        help='Weight decay for the optimizer.')
+
+    parser.add_argument('--log_dir',
+                        type=str,
+                        default='',
+                        help='Directory to save training logs.')
+
     parser.add_argument(
         '--image_size',
         type=int,
         default=224,
         help=
-        'Input images will be resized to --image_size x --image_size (square). Code only tested with 224x224, so no guarantees that it works for different sizes.'
+        'Resize input images to --image_size x --image_size (default: 224x224).'
     )
-    parser.add_argument(
-        '--state_dict_dir_net',
-        type=str,
-        default='',
-        help=
-        'The directory containing a state dict with a pretrained PIP-Net. E.g., ./runs/run_pipnet/checkpoints/net_pretrained'
-    )
+
+    parser.add_argument('--state_dict_dir_net',
+                        type=str,
+                        default='',
+                        help='Directory of a pretrained PIP-Net state dict.')
+
     parser.add_argument(
         '--freeze_epochs',
         type=int,
         default=10,
         help=
-        'Number of epochs where pretrained features_net will be frozen while training classification layer (and last layer(s) of backbone)'
+        'Number of epochs to freeze pretrained layers while training classification layers.'
     )
-    parser.add_argument(
-        '--dir_for_saving_images',
-        type=str,
-        default='visualization_results',
-        help='Directory for saving the prototypes and explanations')
+
+    parser.add_argument('--dir_for_saving_images',
+                        type=str,
+                        default='visualization_results',
+                        help='Directory to save prototypes and explanations.')
+
     parser.add_argument('--num_workers',
                         type=int,
                         default=8,
-                        help='Num workers in dataloaders.')
+                        help='Number of workers for data loading.')
+
     parser.add_argument(
         '--extra_test_image_folder',
         type=str,
         default='./experiments',
         help=
-        'Folder with images that PIP-Net will predict and explain, that are not in the training or val set. Images should be in subfolder.'
-    )
+        'Folder with additional test images for prediction and explanation.')
 
     args = parser.parse_args()
     runs_dir = './runs'
