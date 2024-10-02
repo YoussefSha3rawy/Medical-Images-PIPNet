@@ -1,3 +1,4 @@
+from typing import Dict, Tuple
 import numpy as np
 import argparse
 import torch
@@ -189,8 +190,8 @@ class TwoAugSupervisedDataset(torch.utils.data.Dataset):
 # function copied from https://pytorch.org/vision/stable/_modules/torchvision/transforms/autoaugment.html#TrivialAugmentWide (v0.12) and adapted
 class TrivialAugmentWideNoColor(transforms.TrivialAugmentWide):
 
-    def _augmentation_space(self,
-                            num_bins: int) -> Dict[str, Tuple[Tensor, bool]]:
+    def _augmentation_space(
+            self, num_bins: int) -> Dict[str, Tuple[torch.Tensor, bool]]:
         return {
             "Identity": (torch.tensor(0.0), False),
             "ShearX": (torch.linspace(0.0, 0.5, num_bins), True),
@@ -203,8 +204,8 @@ class TrivialAugmentWideNoColor(transforms.TrivialAugmentWide):
 
 class TrivialAugmentWideNoShapeWithColor(transforms.TrivialAugmentWide):
 
-    def _augmentation_space(self,
-                            num_bins: int) -> Dict[str, Tuple[Tensor, bool]]:
+    def _augmentation_space(
+            self, num_bins: int) -> Dict[str, Tuple[torch.Tensor, bool]]:
         return {
             "Identity": (torch.tensor(0.0), False),
             "Brightness": (torch.linspace(0.0, 0.5, num_bins), True),
@@ -222,8 +223,8 @@ class TrivialAugmentWideNoShapeWithColor(transforms.TrivialAugmentWide):
 
 class TrivialAugmentWideNoShape(transforms.TrivialAugmentWide):
 
-    def _augmentation_space(self,
-                            num_bins: int) -> Dict[str, Tuple[Tensor, bool]]:
+    def _augmentation_space(
+            self, num_bins: int) -> Dict[str, Tuple[torch.Tensor, bool]]:
         return {
             "Identity": (torch.tensor(0.0), False),
             "Brightness": (torch.linspace(0.0, 0.5, num_bins), True),
